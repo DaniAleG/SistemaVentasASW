@@ -1,141 +1,186 @@
-<?php
+var apiHistorialUrl = 'Backend/api_historial.php';
 
-declare(strict_types=1);
-
-session_start();
-
-if (!isset($_SESSION['usuario_activo'])) {
-    header('Location: index.php');
-    exit();
+function formatMoney(value) {
+    return Number(value || 0).toFixed(2);
 }
-$usuario = $_SESSION['usuario_activo'];
-$rolUsuario = strtolower(trim((string) ($usuario['rol'] ?? '')));
-if ($rolUsuario !== 'administrador') {
-    header('Location: pos.php');
-    exit();
+
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
-?>
 
-<!DOCTYPE html>
-<html lang="es">
+function normalizarEstado(estado) {
+    var texto = String(estado || '').toLowerCase().trim();
 
-<head>
-    <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Catalogo</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
-    <link rel="stylesheet" href="Frontend/css/dashboard.css">
-    <style>
-        .btn-verde {
-            background-color: var(--verde-oscuro);
-            color: white;
+    if (!texto) {
+        return { label: 'Pagada', clase: 'text-bg-success' };
+    }
+
+    if (texto === 'anulada' || texto === 'anulado' || texto === 'cancelada' || texto === 'cancelado' || texto === '0' || texto === 'false') {
+        return { label: 'Anulada', clase: 'text-bg-danger' };
+    }
+
+    return { label: 'Pagada', clase: 'text-bg-success' };
+}
+
+function normalizarTipoFactura(tipoFactura) {
+    var texto = String(tipoFactura || '').trim();
+    return texto || 'Factura';
+}
+
+function setMensaje(texto) {
+    var mensaje = document.getElementById('mensaje-historial');
+    if (mensaje) {
+        mensaje.textContent = texto || '';
+    }
+}
+
+function actualizarCards(resumen) {
+    document.getElementById('card-total-vendido').textContent = '$ ' + formatMoney(resumen.total_vendido);
+    document.getElementById('card-cantidad-facturas').textContent = String(Number(resumen.cantidad_facturas || 0));
+    document.getElementById('card-ticket-promedio').textContent = '$ ' + formatMoney(resumen.ticket_promedio);
+}
+
+function renderTabla(registros) {
+    var cuerpo = document.getElementById('historial-body');
+    if (!cuerpo) {
+        return;
+    }
+
+    if (!Array.isArray(registros) || registros.length === 0) {
+        cuerpo.innerHTML = '<tr><td colspan="7" class="text-center text-secondary py-4">Sin datos para mostrar</td></tr>';
+        return;
+    }
+
+    cuerpo.innerHTML = registros.map(function (item) {
+        var estado = normalizarEstado(item.estado);
+        var tipoFactura = normalizarTipoFactura(item.tipo_factura);
+        return '<tr>' +
+            '<td>' + escapeHtml(item.numero || item.id || '') + '</td>' +
+            '<td>' + escapeHtml(item.fecha || '') + '</td>' +
+            '<td>' + escapeHtml(item.cliente || 'Consumidor Final') + '</td>' +
+            '<td>' + escapeHtml(item.vendedor || 'Sin asignar') + '</td>' +
+            '<td class="text-end">' + formatMoney(item.total) + '</td>' +
+            '<td class="text-center">' + escapeHtml(tipoFactura) + '</td>' +
+            '<td class="text-center"><span class="badge ' + estado.clase + '">' + estado.label + '</span></td>' +
+            '</tr>';
+    }).join('');
+}
+
+async function cargarHistorial() {
+    var fechaInicio = document.getElementById('filtro-fecha-inicio').value;
+    var fechaFin = document.getElementById('filtro-fecha-fin').value;
+    var filtroCliente = document.getElementById('filtro-cliente').value.trim();
+    var filtroFactura = document.getElementById('filtro-factura').value.trim();
+    var botonConsultar = document.getElementById('btn-consultar-historial');
+
+    if (fechaInicio && fechaFin && fechaInicio > fechaFin) {
+        setMensaje('La fecha inicio no puede ser mayor que la fecha fin.');
+        return;
+    }
+
+    if (botonConsultar) {
+        botonConsultar.disabled = true;
+        botonConsultar.textContent = 'Consultando...';
+    }
+
+    setMensaje('');
+
+    try {
+        var params = new URLSearchParams();
+        if (fechaInicio) {
+            params.set('fecha_inicio', fechaInicio);
+        }
+        if (fechaFin) {
+            params.set('fecha_fin', fechaFin);
+        }
+        if (filtroCliente) {
+            params.set('cliente', filtroCliente);
+        }
+        if (filtroFactura) {
+            params.set('factura', filtroFactura);
         }
 
-        .btn-verde:hover {
-            background-color: var(--verde-medio);
-            color: white;
+        var response = await fetch(apiHistorialUrl + '?' + params.toString(), {
+            headers: {
+                Accept: 'application/json'
+            }
+        });
+
+        var data = await response.json();
+
+        if (!response.ok || data.estado === 'error') {
+            throw new Error(data.mensaje || 'No se pudo cargar el historial');
         }
-    </style>
-</head>
 
-<body>
-    <div class="d-flex">
-        <?php include 'Backend/includes/sidebar.php'; ?>
-        <div id="content" class="w-100">
-            <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm mb-4 p-3">
-                <span class="navbar-brand mb-0 h4 text-secondary">Catalogo de Productos</span>
-            </nav>
+        actualizarCards(data.resumen || {
+            total_vendido: 0,
+            cantidad_facturas: 0,
+            ticket_promedio: 0
+        });
+        renderTabla(data.registros || []);
 
-            <div class="container-fluid px-4">
-                <div class="d-flex justify-content-between align-items-center mb-4">
+        if (data.mensaje) {
+            setMensaje(data.mensaje);
+        }
+    } catch (error) {
+        actualizarCards({
+            total_vendido: 0,
+            cantidad_facturas: 0,
+            ticket_promedio: 0
+        });
+        renderTabla([]);
+        setMensaje(error.message || 'No se pudo cargar el historial.');
+    } finally {
+        if (botonConsultar) {
+            botonConsultar.disabled = false;
+            botonConsultar.textContent = 'Consultar';
+        }
+    }
+}
 
-                    <input
-                        type="text"
-                        id="input-busqueda"
-                        class="form-control w-25"
-                        placeholder="🔍 Buscar por nombre o código...">
+function obtenerFechaISO(date) {
+    return date.toISOString().slice(0, 10);
+}
 
-                    <div>
+document.addEventListener('DOMContentLoaded', function () {
+    var inputInicio = document.getElementById('filtro-fecha-inicio');
+    var inputFin = document.getElementById('filtro-fecha-fin');
+    var inputCliente = document.getElementById('filtro-cliente');
+    var inputFactura = document.getElementById('filtro-factura');
+    var botonConsultar = document.getElementById('btn-consultar-historial');
 
-                        <button class="btn btn-verde" onclick="abrirModal()">
-                            Nuevo Producto
-                        </button>
+    var hoy = new Date();
+    var inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
 
-                    </div>
+    if (inputInicio) {
+        inputInicio.value = obtenerFechaISO(inicioMes);
+    }
 
-                </div>
+    if (inputFin) {
+        inputFin.value = obtenerFechaISO(hoy);
+    }
 
-                <div id="reader"
-                    style="display:none;width:350px;margin-bottom:20px;">
-                </div>
-                <!--Tabla para los datos-->
-                <div class="card shadow-sm">
-                    <div class="card-body">
-                        <table class="table table-hover">
-                            <thead class="table-light">
-                                <tr>
-                                    <th scope="col">Codigo</th>
-                                    <th scope="col">Nombre</th>
-                                    <th scope="col">Precio</th>
-                                    <th scope="col">Stock</th>
-                                    <th scope="col">Acciones</th>
-                                </tr>
-                            </thead>
-                            <tbody id="cuerpo-tabla">
-                                <!-- Tabla de Productos-->
+    if (botonConsultar) {
+        botonConsultar.addEventListener('click', cargarHistorial);
+    }
 
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <!--Modal para insertar producto-->
-    <div class="modal fade" id="modalProducto" tabindex="-1">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="modalTitulo">Gestionar Producto</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <input type="hidden" id="prod-id">
-                    <div class="mb-3">
-                        <label>Código de Barras</label>
-                        <div class="input-group">
-                            <input type="text" id="prod-codigo" class="form-control" placeholder="Escribe o escanea el código...">
-                            <button class="btn btn-outline-secondary" type="button" onclick="abrirScannerModal()" id="btn-scan-modal" title="Escanear código">
-                                📷 Escanear
-                            </button>
-                        </div>
-                        <div id="reader-modal" style="display:none; width:100%; margin-top: 10px; border-radius: 8px; overflow: hidden;"></div>
-                        <div class="invalid-feedback d-block d-none" id="prod-codigo-error"></div>
-                    </div>
-                    <div class="mb-3">
-                        <label>Nombre</label>
-                        <input type="text" id="prod-nombre" class="form-control">
-                    </div>
-                    <div class="mb-3">
-                        <label>Precio</label>
-                        <input type="text" id="prod-precio" class="form-control" inputmode="decimal" placeholder="0.00">
-                    </div>
-                    <div class="mb-3">
-                        <label>Stock</label>
-                        <input type="text" id="prod-stock" class="form-control" inputmode="numeric" placeholder="0">
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                    <button class="btn btn-verde" onclick="guardarProducto()">Guardar Cambios</button>
-                </div>
-            </div>
-        </div>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
-    <script src="https://unpkg.com/html5-qrcode"></script>
-    <script src="Frontend/js/catalogo.js" defer></script>
-</body>
+    [inputCliente, inputFactura].forEach(function (input) {
+        if (!input) {
+            return;
+        }
 
-</html>
+        input.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                cargarHistorial();
+            }
+        });
+    });
+
+    cargarHistorial();
+});

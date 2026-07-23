@@ -1,6 +1,6 @@
 <?php
 
-session_start();
+require_once __DIR__ . '/Backend/includes/session_init.php';
 if (isset($_SESSION['usuario_activo'])) {
     $rol = strtolower(trim((string) ($_SESSION['usuario_activo']['rol'] ?? '')));
     $destino = $rol === 'administrador' ? 'dashboard.php' : 'pos.php';
